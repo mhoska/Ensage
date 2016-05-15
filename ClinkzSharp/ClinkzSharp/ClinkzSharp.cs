@@ -14,15 +14,16 @@
     {
 
         private static Ability strafe, arrows, dpAbility;
-        private static Item bkb, orchid, hex, medallion, solar, bloodthorn;
+        private static Item bkb, orchid, hex, medallion, solar, bloodthorn, hurricanePikeItem;
         private static readonly Menu Menu = new Menu("ClinkzSharp", "clinkzsharp", true, "npc_dota_hero_Clinkz", true);
         private static Hero me, target;
         private static bool autoKillz;
         private static bool autoFarmz;
         public static float TargetDistance { get; private set; }
-        private static AbilityToggler menuValue;
+        private static AbilityToggler itemToggler, skillToggler;
         private static bool dragonLance;
-        private static bool menuvalueSet;
+        public static bool hurricanePike;
+        private static bool itemTogglerSet, menuSkillSet, ultBool;
         private static readonly int[] Quack = { 0, 50, 60, 70, 80 };
         private static int attackRange;
         private static ParticleEffect effect;
@@ -31,6 +32,7 @@
         private static Font text;
         private static Font notice;
         private static Line line;
+
 
 
         public static void Init()
@@ -45,17 +47,13 @@
             AppDomain.CurrentDomain.DomainUnload += CurrentDomain_DomainUnload;
 
             Console.WriteLine(@"> ClinkzSharp LOADED!");
-            var menuThingy = new Menu("Options", "opsi");
-            menuThingy.AddItem(new MenuItem("enable", "Enable").SetValue(true));
-            Menu.AddSubMenu(menuThingy);
-            menuThingy.AddItem(new MenuItem("comboKey", "Combo Key").SetValue(new KeyBind(32, KeyBindType.Press)));
-            menuThingy.AddItem(new MenuItem("farmKey", "Farm Key").SetValue(new KeyBind('E', KeyBindType.Press)));
-            menuThingy.AddItem(new MenuItem("enableult", "Enable AutoUlt").SetValue(true));
-            menuThingy.AddItem(new MenuItem("drawLastHit", "Draw Last hit").SetValue(true));
-            menuThingy.AddItem(new MenuItem("drawAttackRange", "Draw Clinkz attack range").SetValue(true));
-            Menu.AddToMainMenu();
-
-            var dict = new Dictionary<string, bool>
+            var menuCombo = new Menu("Combo Options", "wombo", false, @"..\other\statpop_dotalogo", true);
+            menuCombo.AddItem(new MenuItem("enable", "Enable").SetValue(true));
+            menuCombo.AddItem(new MenuItem("comboKey", "Combo Key").SetValue(new KeyBind(32, KeyBindType.Press)));
+            menuCombo.AddItem(new MenuItem("farmKey", "Farm Key").SetValue(new KeyBind('D', KeyBindType.Press)));
+           // menuCombo.AddItem(new MenuItem("enableult", "Enable AutoUlt").SetValue(true));
+            menuCombo.AddItem(new MenuItem("orbwalk", "Orbwalk").SetValue(true));
+            var itemDict = new Dictionary<string, bool>
             {
                 { "item_solar_crest", true },
                 { "item_black_king_bar", true },
@@ -63,9 +61,28 @@
                 { "item_orchid", true },
                 { "item_bloodthorn", true },
                 { "item_sheepstick", true },
+            };
+            menuCombo.AddItem(new MenuItem("Items", "Items:").SetValue(new AbilityToggler(itemDict)));
+
+            var skillDict = new Dictionary<string, bool>
+            {
+                { "clinkz_strafe", true },
+                { "clinkz_searing_arrows", true },
+                { "clinkz_death_pact", true },
 
             };
-            Menu.AddItem(new MenuItem("Items", "Items:").SetValue(new AbilityToggler(dict)));
+            menuCombo.AddItem(new MenuItem("Skills", "Skills:").SetValue(new AbilityToggler(skillDict)));
+
+
+            var menuDraws = new Menu("Drawings", "draws", false, @"..\other\statpop_clock", true);
+            menuDraws.AddItem(new MenuItem("drawLastHit", "Draw Last hit").SetValue(true));
+            menuDraws.AddItem(new MenuItem("drawAttackRange", "Draw Clinkz attack range").SetValue(true));
+
+            Menu.AddSubMenu(menuCombo);
+            Menu.AddSubMenu(menuDraws);
+            Menu.AddToMainMenu();
+
+
 
             text = new Font(
                 Drawing.Direct3DDevice9,
@@ -121,20 +138,43 @@
             if (bloodthorn == null)
                 bloodthorn = me.FindItem("item_bloodthorn");
 
+            if (bloodthorn == null)
+                bloodthorn = me.FindItem("item_bloodthorn");
+
             if (medallion == null)
                 medallion = me.FindItem("item_medallion_of_courage");
 
             if (solar == null)
                 solar = me.FindItem("item_solar_crest");
 
+            if (hurricanePikeItem == null)
+                hurricanePikeItem = me.FindItem("item_hurricane_pike");
+
             dragonLance = me.Modifiers.Any(x => x.Name == "modifier_item_dragon_lance");
 
             attackRange = dragonLance ? 760 : 630;
 
-            if (!menuvalueSet)
+            attackRange = hurricanePike ? 760 : 630;
+
+            if (!itemTogglerSet)
             {
-                menuValue = Menu.Item("Items").GetValue<AbilityToggler>();
-                menuvalueSet = true;
+                itemToggler = Menu.Item("Items").GetValue<AbilityToggler>();
+                itemTogglerSet = true;
+            }
+
+            if (!menuSkillSet)
+            {
+                skillToggler = Menu.Item("Skills").GetValue<AbilityToggler>();
+                menuSkillSet = true;
+            }
+
+            if (dpAbility != null && skillToggler.IsEnabled(dpAbility.Name))
+            {
+                ultBool = true;
+            }
+            else
+            {
+                ultBool = false;
             }
 
             const int DPrange = 0x190;
@@ -149,6 +189,7 @@
                              creep.IsAlive && creep.IsVisible && creep.IsSpawned &&
                              creep.Team != me.Team && creep.Position.Distance2D(me.Position) <= DPrange &&
                              me.Spellbook.SpellR.CanBeCasted()).ToList();
+
             if (autoKillz && Menu.Item("enable").GetValue<bool>())
             {
                 target = me.ClosestToMouseTarget(1001);
@@ -184,54 +225,65 @@
                     {
                         TargetDistance = me.Position.Distance2D(target);
 
-                        Orbwalking.Orbwalk(target, Game.Ping, attackmodifiers: true);
-                        if (strafe != null && strafe.IsValid && strafe.CanBeCasted() && me.CanCast() && me.Distance2D(target) <= attackRange + 90 &&
-                            Utils.SleepCheck("strafe"))
-
+                        if (Menu.Item("orbwalk").GetValue<bool>())
                         {
-                            strafe.UseAbility();
-                            Utils.Sleep(50 + Game.Ping, "strafe");
+                            if (!Utils.SleepCheck("attacking"))
+                                Orbwalking.Orbwalk(target, Game.Ping, attackmodifiers: true);
+                            Utils.Sleep(200, "attacking");
+                        }
+                        else if (!Menu.Item("orbwalk").GetValue<bool>())
+                        {
+                            if (arrows != null && arrows.IsValid && arrows.CanBeCasted() && !Utils.SleepCheck("attacking"))
+                                arrows.UseAbility(target);
+                            Utils.Sleep(200, "attacking");
                         }
 
-                        if (creepR.Count > 0 && !me.Modifiers.ToList().Exists(x => x.Name == "modifier_clinkz_death_pact") && Menu.Item("enableult").GetValue<bool>())
+                        if (creepR.Count > 0 && !me.Modifiers.ToList().Exists(x => x.Name == "modifier_clinkz_death_pact") && skillToggler.IsEnabled(dpAbility.Name))
                         {
                             var creepmax = creepR.MaxOrDefault(x => x.Health);
                             dpAbility.UseAbility(creepmax);
                         }
 
-                        if (medallion != null && medallion.IsValid && medallion.CanBeCasted() && Utils.SleepCheck("medallion") && menuValue.IsEnabled(medallion.Name) && me.Distance2D(target) <= attackRange + 90)
+                        if (strafe != null && strafe.IsValid && strafe.CanBeCasted() && me.CanCast() && me.Distance2D(target) <= attackRange + 90 && Utils.SleepCheck("strafe") && skillToggler.IsEnabled(strafe.Name))
+                        {
+                            strafe.UseAbility();
+                            Utils.Sleep(50 + Game.Ping, "strafe");
+                        }
+
+                        if (medallion != null && medallion.IsValid && medallion.CanBeCasted() && Utils.SleepCheck("medallion") && itemToggler.IsEnabled(medallion.Name) && me.Distance2D(target) <= attackRange + 90)
                         {
                             medallion.UseAbility(target);
                             Utils.Sleep(50 + Game.Ping, "medallion");
                         }
 
-                        if (solar != null && solar.IsValid && solar.CanBeCasted() && Utils.SleepCheck("solar") && menuValue.IsEnabled(solar.Name))
+                        if (solar != null && solar.IsValid && solar.CanBeCasted() && Utils.SleepCheck("solar") && itemToggler.IsEnabled(solar.Name))
                         {
                             solar.UseAbility(target);
                             Utils.Sleep(50 + Game.Ping, "solar");
                         }
 
-                        if (bkb != null && bkb.IsValid && bkb.CanBeCasted() && Utils.SleepCheck("bkb") && menuValue.IsEnabled(bkb.Name) && me.Distance2D(target) <= attackRange + 90)
+
+                        if (bkb != null && bkb.IsValid && bkb.CanBeCasted() && Utils.SleepCheck("bkb") && itemToggler.IsEnabled(bkb.Name) && me.Distance2D(target) <= attackRange + 90)
                         {
                             bkb.UseAbility();
                             Utils.Sleep(150 + Game.Ping, "bkb");
                         }
 
-                        if (hex != null && hex.IsValid && hex.CanBeCasted() && Utils.SleepCheck("hex") && menuValue.IsEnabled(hex.Name))
+                        if (hex != null && hex.IsValid && hex.CanBeCasted() && Utils.SleepCheck("hex") && itemToggler.IsEnabled(hex.Name))
                         {
                             hex.CastStun(target);
                             Utils.Sleep(250 + Game.Ping, "hex");
                             return;
                         }
 
-                        if (orchid != null && orchid.IsValid && orchid.CanBeCasted() && Utils.SleepCheck("orchid") && menuValue.IsEnabled(orchid.Name))
+                        if (orchid != null && orchid.IsValid && orchid.CanBeCasted() && Utils.SleepCheck("orchid") && itemToggler.IsEnabled(orchid.Name))
                         {
                             orchid.CastStun(target);
                             Utils.Sleep(250 + Game.Ping, "orchid");
                             return;
                         }
 
-                        if (bloodthorn != null && bloodthorn.IsValid && bloodthorn.CanBeCasted() && Utils.SleepCheck("bloodthorn") && menuValue.IsEnabled(bloodthorn.Name))
+                        if (bloodthorn != null && bloodthorn.IsValid && bloodthorn.CanBeCasted() && Utils.SleepCheck("bloodthorn") && itemToggler.IsEnabled(bloodthorn.Name))
                         {
                             bloodthorn.CastStun(target);
                             Utils.Sleep(250 + Game.Ping, "orchid");
@@ -435,7 +487,7 @@
             f.DrawText(null, stext, x, y, color);
         }
 
-        private static void Drawing_OnEndScene(EventArgs args)
+        public static void Drawing_OnEndScene(EventArgs args)
         {
             if (Drawing.Direct3DDevice9 == null || Drawing.Direct3DDevice9.IsDisposed || !Game.IsInGame)
             {
@@ -455,7 +507,8 @@
                 DrawFilledBox(2, 45, 115, 20, new ColorBGRA(0, 0, 0, 100));
                 DrawShadowText("Clinkz#: Comboing!", 2, 45, Color.LightBlue, text);
             }
-            if (Menu.Item("enableult").GetValue<bool>())
+
+            if (ultBool)
             {
                 DrawBox(120, 45, 65, 20, 1, new ColorBGRA(0, 200, 100, 100));
                 DrawFilledBox(120, 45, 65, 20, new ColorBGRA(0, 0, 0, 100));
@@ -471,16 +524,11 @@
 
         private static void Drawing_OnDraw(EventArgs args)
         {
-            if (!Game.IsInGame || Game.IsPaused || Game.IsWatchingGame)
-            {
-                return;
-            }
+            if (!Game.IsInGame || Game.IsPaused || Game.IsWatchingGame) return;
 
             me = ObjectManager.LocalHero;
             if (me == null || me.ClassID != ClassID.CDOTA_Unit_Hero_Clinkz)
-            {
                 return;
-            }
 
             //newer stuff begunnn
             if (attackRange != attackRangeDraw)
