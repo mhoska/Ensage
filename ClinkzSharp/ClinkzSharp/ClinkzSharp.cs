@@ -7,39 +7,43 @@
     using Ensage.Common;
     using Ensage.Common.Extensions;
     using Ensage.Common.Menu;
+    using Ensage.Items;
+
     using SharpDX;
     using SharpDX.Direct3D9;
+
+    using Attribute = Ensage.Attribute;
+
 
     internal class ClinkzSharp
     {
 
         private static Ability strafe, arrows, dpAbility;
-        private static Item bkb, orchid, hex, medallion, solar, bloodthorn, hurricanePikeItem;
+        private static Item bkb, orchid, hex, medallion, solar, bloodthorn;
         private static readonly Menu Menu = new Menu("ClinkzSharp", "clinkzsharp", true, "npc_dota_hero_Clinkz", true);
         private static Hero me, target;
         private static bool autoKillz;
         private static bool autoFarmz;
-        public static float TargetDistance { get; private set; }
+        public static float TargetDistance { get; set; }
         private static AbilityToggler itemToggler, skillToggler;
-        private static bool dragonLance;
-        public static bool hurricanePike;
+        public static bool dragonLance, hurricanePike;
         private static bool itemTogglerSet, menuSkillSet, ultBool;
         private static readonly int[] Quack = { 0, 50, 60, 70, 80 };
-        private static int attackRange;
+        private static float attackRange, attackRangeDraw;
         private static ParticleEffect effect;
         private static readonly Dictionary<int, ParticleEffect> Effect = new Dictionary<int, ParticleEffect>();
-        private static int attackRangeDraw;
         private static Font text;
         private static Font notice;
         private static Line line;
-
-
+        private static PowerTreads powerTreads;
+        private static Attribute lastAttribute;
 
         public static void Init()
         {
             Game.OnUpdate += Game_OnUpdate;
             Game.OnUpdate += Farming;
             Game.OnWndProc += Game_OnWndProc;
+            Player.OnExecuteOrder += OrderExecute;
             Drawing.OnDraw += Drawing_OnDraw;
             Drawing.OnPreReset += Drawing_OnPreReset;
             Drawing.OnPostReset += Drawing_OnPostReset;
@@ -63,6 +67,7 @@
                 { "item_sheepstick", true },
             };
             menuCombo.AddItem(new MenuItem("Items", "Items:").SetValue(new AbilityToggler(itemDict)));
+            menuCombo.AddItem(new MenuItem("bkblogic", "Min targets to BKB").SetValue(new Slider(2, 1, 5)));
 
             var skillDict = new Dictionary<string, bool>
             {
@@ -71,13 +76,21 @@
                 { "clinkz_death_pact", true },
 
             };
-            menuCombo.AddItem(new MenuItem("Skills", "Skills:").SetValue(new AbilityToggler(skillDict)));
-
+            menuCombo.AddItem(new MenuItem("Skills", "Skills:").SetValue(new AbilityToggler(skillDict))
+                                    .SetTooltip("set this on so it can cast shadow dance automatically."));
 
             var menuDraws = new Menu("Drawings", "draws", false, @"..\other\statpop_clock", true);
             menuDraws.AddItem(new MenuItem("drawLastHit", "Draw Last hit").SetValue(true));
             menuDraws.AddItem(new MenuItem("drawAttackRange", "Draw Clinkz attack range").SetValue(true));
+            /*
+            menuDraws.AddItem(new MenuItem("colorThingy", "AttackRange Color"));
+            menuDraws.AddItem(new MenuItem("red", "Red:")).SetFontColor(Color.Red).SetValue(new Slider(100, 0, 255));
+            menuDraws.AddItem(new MenuItem("green", "Green:")).SetFontColor(Color.Green).SetValue(new Slider(100, 0, 255));
+            menuDraws.AddItem(new MenuItem("blue", "Blue:")).SetFontColor(Color.Blue).SetValue(new Slider(100, 0, 255));
 
+                                                    effect.SetControlPoint(1, new Vector3(Menu.Item("red").GetValue<Slider>().Value,
+                                                          Menu.Item("green").GetValue<Slider>().Value,
+                                                          Menu.Item("blue").GetValue<Slider>().Value));*/
             Menu.AddSubMenu(menuCombo);
             Menu.AddSubMenu(menuDraws);
             Menu.AddToMainMenu();
@@ -109,25 +122,27 @@
             OnLoadMessage();
         }
 
+
         public static void Game_OnUpdate(EventArgs args)
         {
-            if (!Game.IsInGame || Game.IsPaused || Game.IsWatchingGame) return;
+            if (!Game.IsInGame || Game.IsPaused || Game.IsWatchingGame)
+                return;
 
-            me = ObjectManager.LocalHero;
+            me = ObjectManager.LocalHero; 
             if (me == null || me.ClassID != ClassID.CDOTA_Unit_Hero_Clinkz)
                 return;
 
+            if (strafe == null)
+                strafe = me.Spellbook.SpellQ;
+
             if (arrows == null)
                 arrows = me.Spellbook.SpellW;
-           
+
             if (dpAbility == null)
                 dpAbility = me.Spellbook.SpellR;
 
             if (bkb == null)
                 bkb = me.FindItem("item_black_king_bar");
-
-            if (strafe == null)
-                strafe = me.Spellbook.Spell1;
 
             if (hex == null)
                 hex = me.FindItem("item_sheepstick");
@@ -147,14 +162,13 @@
             if (solar == null)
                 solar = me.FindItem("item_solar_crest");
 
-            if (hurricanePikeItem == null)
-                hurricanePikeItem = me.FindItem("item_hurricane_pike");
+            if (powerTreads == null)
+                powerTreads = me.FindItem("item_power_treads") as PowerTreads;
 
-            dragonLance = me.Modifiers.Any(x => x.Name == "modifier_item_dragon_lance");
+            dragonLance = me.HasModifier("modifier_item_dragon_lance");
 
             attackRange = dragonLance ? 760 : 630;
 
-            attackRange = hurricanePike ? 760 : 630;
 
             if (!itemTogglerSet)
             {
@@ -168,16 +182,12 @@
                 menuSkillSet = true;
             }
 
-            if (dpAbility != null && skillToggler.IsEnabled(dpAbility.Name))
-            {
-                ultBool = true;
-            }
-            else
-            {
-                ultBool = false;
-            }
+            ultBool = dpAbility != null && skillToggler.IsEnabled("clinkz_death_pact");
 
             const int DPrange = 0x190;
+                
+            if (powerTreads != null)
+                lastAttribute = powerTreads.ActiveAttribute;
 
 
             var creepR =
@@ -189,6 +199,9 @@
                              creep.IsAlive && creep.IsVisible && creep.IsSpawned &&
                              creep.Team != me.Team && creep.Position.Distance2D(me.Position) <= DPrange &&
                              me.Spellbook.SpellR.CanBeCasted()).ToList();
+
+            var enemies = ObjectManager.GetEntities<Hero>().Where(x => x.IsAlive && x.Team != me.Team && !x.IsIllusion).ToList();
+
 
             if (autoKillz && Menu.Item("enable").GetValue<bool>())
             {
@@ -228,8 +241,13 @@
                         if (Menu.Item("orbwalk").GetValue<bool>())
                         {
                             if (!Utils.SleepCheck("attacking"))
-                                Orbwalking.Orbwalk(target, Game.Ping, attackmodifiers: true);
-                            Utils.Sleep(200, "attacking");
+                                if (lastAttribute != Attribute.Agility && Utils.SleepCheck("powerTreadsSwitch"))
+                                {
+                                    SwitchTo(Attribute.Agility);
+                                    Utils.Sleep(400, "powerTreadsSwitch");
+                                }
+                            Orbwalking.Orbwalk(target, Game.Ping, attackmodifiers: true);
+                            Utils.Sleep(400, "attacking");
                         }
                         else if (!Menu.Item("orbwalk").GetValue<bool>())
                         {
@@ -241,13 +259,23 @@
                         if (creepR.Count > 0 && !me.Modifiers.ToList().Exists(x => x.Name == "modifier_clinkz_death_pact") && skillToggler.IsEnabled(dpAbility.Name))
                         {
                             var creepmax = creepR.MaxOrDefault(x => x.Health);
+                            if (lastAttribute != Attribute.Intelligence && Utils.SleepCheck("powerTreadsSwitch"))
+                            {
+                                SwitchTo(Attribute.Intelligence);
+                                Utils.Sleep(400, "powerTreadsSwitch");
+                            }
                             dpAbility.UseAbility(creepmax);
                         }
 
                         if (strafe != null && strafe.IsValid && strafe.CanBeCasted() && me.CanCast() && me.Distance2D(target) <= attackRange + 90 && Utils.SleepCheck("strafe") && skillToggler.IsEnabled(strafe.Name))
                         {
+                            if (lastAttribute != Attribute.Intelligence && Utils.SleepCheck("powerTreadsSwitch"))
+                            {
+                                SwitchTo(Attribute.Intelligence);
+                                Utils.Sleep(400, "powerTreadsSwitch");
+                            }
                             strafe.UseAbility();
-                            Utils.Sleep(50 + Game.Ping, "strafe");
+                            Utils.Sleep(100 + Game.Ping, "strafe");
                         }
 
                         if (medallion != null && medallion.IsValid && medallion.CanBeCasted() && Utils.SleepCheck("medallion") && itemToggler.IsEnabled(medallion.Name) && me.Distance2D(target) <= attackRange + 90)
@@ -263,7 +291,7 @@
                         }
 
 
-                        if (bkb != null && bkb.IsValid && bkb.CanBeCasted() && Utils.SleepCheck("bkb") && itemToggler.IsEnabled(bkb.Name) && me.Distance2D(target) <= attackRange + 90)
+                        if (bkb != null && bkb.IsValid && bkb.CanBeCasted() && Utils.SleepCheck("bkb") && itemToggler.IsEnabled(bkb.Name) && (enemies.Count(x => x.Distance2D(me) <= 650) >= (Menu.Item("bkblogic").GetValue<Slider>().Value)))
                         {
                             bkb.UseAbility();
                             Utils.Sleep(150 + Game.Ping, "bkb");
@@ -303,12 +331,6 @@
                 }
             }
         }//gameOnUpdate Close.
-
-        private static void OnLoadMessage()
-        {
-            Game.PrintMessage("<font face='helvetica' color='#00FF00'>ClinkzSharp loaded!</font>", MessageType.LogMessage);
-            Console.WriteLine(@"> ClinkzSharp is on like Donkey Kong!");
-        }
 
         public static void Farming(EventArgs args)
         {
@@ -373,158 +395,56 @@
                 }
             }
         }//game_onWndProc
-        private static double getDmgOnUnit(Unit unit, double bonusdamage)
+
+        private static void OrderExecute(Player P, ExecuteOrderEventArgs e)
         {
-
-            var quacklvl = me.Spellbook.SpellW.Level;
-            var quelling_blade = me.FindItem("item_quelling_blade");
-            double physDamage = me.MinimumDamage + me.BonusDamage;
-            if (quelling_blade != null)
-            {
-                if (me.ClassID == ClassID.CDOTA_Unit_Hero_Clinkz)
-                {
-                    physDamage = me.MinimumDamage * 1.25 + me.BonusDamage;
-                }
-            }
-            var damageMp = 1 - 0.06 * unit.Armor / (1 + 0.06 * Math.Abs(unit.Armor));
-
-            var realDamage = (bonusdamage + physDamage + Quack[quacklvl]) * damageMp;
-            if (unit.ClassID == ClassID.CDOTA_BaseNPC_Creep_Siege ||
-                unit.ClassID == ClassID.CDOTA_BaseNPC_Tower)
-            {
-                realDamage = realDamage / 2;
-            }
-
-            return realDamage;
-        }
-        private static void drawHPLastHit()
-        {
-            var enemies = ObjectManager.GetEntities<Unit>().Where(x => (x.ClassID == ClassID.CDOTA_BaseNPC_Tower || x.ClassID == ClassID.CDOTA_BaseNPC_Creep_Lane || x.ClassID == ClassID.CDOTA_BaseNPC_Creep || x.ClassID == ClassID.CDOTA_BaseNPC_Creep_Neutral || x.ClassID == ClassID.CDOTA_BaseNPC_Creep_Siege || x.ClassID == ClassID.CDOTA_BaseNPC_Additive || x.ClassID == ClassID.CDOTA_BaseNPC_Building || x.ClassID == ClassID.CDOTA_BaseNPC_Creature) && x.IsAlive && x.IsVisible && x.Team != me.Team && x.Distance2D(me) < attackRange + 600);
-
-            foreach (var enemy in enemies.Where(x => true))
-            {
-                var health = enemy.Health;
-                var maxHealth = enemy.MaximumHealth;
-                if (health == maxHealth)
-                {
-                    continue;
-                }
-                var damge = (float)getDmgOnUnit(enemy, 0);
-                var hpleft = health;
-                var hpperc = hpleft / maxHealth;
-
-                var hbarpos = HUDInfo.GetHPbarPosition(enemy);
-
-                Vector2 screenPos;
-                var enemyPos = enemy.Position + new Vector3(0, 0, enemy.HealthBarOffset);
-                if (!Drawing.WorldToScreen(enemyPos, out screenPos))
-                {
-                    continue;
-                }
-
-                var start = screenPos;
-
-                hbarpos.X = start.X - HUDInfo.GetHPBarSizeX(enemy) / 2;
-                hbarpos.Y = start.Y;
-                var hpvarx = hbarpos.X;
-                var a = (float)Math.Round(damge * HUDInfo.GetHPBarSizeX(enemy) / enemy.MaximumHealth);
-                var position = hbarpos + new Vector2(hpvarx * hpperc + 10, -12);
-                try
-                {
-                    Drawing.DrawRect(position, new Vector2(a, HUDInfo.GetHpBarSizeY(enemy) - 4), enemy.Health > damge ? enemy.Health > damge * 2 ? new Color(180, 205, 205, 40) : new Color(255, 0, 0, 60) : new Color(127, 255, 0, 80));
-                    Drawing.DrawRect(position, new Vector2(a, HUDInfo.GetHpBarSizeY(enemy) - 4), Color.Black, true);
-                }
-                catch (Exception e)
-                {
-                    Console.WriteLine(e.Message);
-                }
-            }
-        }
-
-        private static void Drawing_OnPostReset(EventArgs args)
-        {
-            text.OnResetDevice();
-            notice.OnResetDevice();
-            line.OnResetDevice();
-        }
-
-        private static void Drawing_OnPreReset(EventArgs args)
-        {
-            text.OnLostDevice();
-            notice.OnLostDevice();
-            line.OnLostDevice();
-        }
-
-        public static void DrawFilledBox(float x, float y, float w, float h, Color color)
-        {
-            var vLine = new Vector2[2];
-
-            line.GLLines = true;
-            line.Antialias = false;
-            line.Width = w;
-
-            vLine[0].X = x + w / 2;
-            vLine[0].Y = y;
-            vLine[1].X = x + w / 2;
-            vLine[1].Y = y + h;
-
-            line.Begin();
-            line.Draw(vLine, color);
-            line.End();
-        }
-
-        public static void DrawBox(float x, float y, float w, float h, float px, Color color)
-        {
-            DrawFilledBox(x, y + h, w, px, color);
-            DrawFilledBox(x - px, y, px, h, color);
-            DrawFilledBox(x, y - px, w, px, color);
-            DrawFilledBox(x + w, y, px, h, color);
-        }
-
-        public static void DrawShadowText(string stext, int x, int y, Color color, Font f)
-        {
-            f.DrawText(null, stext, x + 1, y + 1, Color.Black);
-            f.DrawText(null, stext, x, y, color);
-        }
-
-        public static void Drawing_OnEndScene(EventArgs args)
-        {
-            if (Drawing.Direct3DDevice9 == null || Drawing.Direct3DDevice9.IsDisposed || !Game.IsInGame)
-            {
+            if (!Game.IsInGame || Game.IsPaused || Game.IsWatchingGame)
                 return;
-            }
 
-            var player = ObjectManager.LocalPlayer;
             me = ObjectManager.LocalHero;
-            if (player == null || player.Team == Team.Observer || me.ClassID != ClassID.CDOTA_Unit_Hero_Clinkz)
-            {
+            if (me == null || me.ClassID != ClassID.CDOTA_Unit_Hero_Clinkz)
                 return;
-            }
 
-            if (Menu.Item("comboKey").GetValue<KeyBind>().Active)
-            {
-                DrawBox(2, 45, 115, 20, 1, new ColorBGRA(0, 128, 0, 128));
-                DrawFilledBox(2, 45, 115, 20, new ColorBGRA(0, 0, 0, 100));
-                DrawShadowText("Clinkz#: Comboing!", 2, 45, Color.LightBlue, text);
-            }
+            if (e.Ability == null)
+                return;
 
-            if (ultBool)
+            switch (e.Ability.Name)
             {
-                DrawBox(120, 45, 65, 20, 1, new ColorBGRA(0, 200, 100, 100));
-                DrawFilledBox(120, 45, 65, 20, new ColorBGRA(0, 0, 0, 100));
-                DrawShadowText("AutoUlt On", 120, 45, Color.LightBlue, text);
-            }
-            else
-            {
-                DrawBox(120, 45, 65, 20, 1, new ColorBGRA(0, 200, 100, 100));
-                DrawFilledBox(120, 45, 65, 20, new ColorBGRA(0, 0, 0, 100));
-                DrawShadowText("AutoUlt Off", 120, 45, Color.LightBlue, text);
+                case "clinkz_searing_arrows":
+                    if (lastAttribute != Attribute.Agility && Utils.SleepCheck("powerTreadsSwitch"))
+                    {
+                        SwitchTo(Attribute.Agility);
+                        Utils.Sleep(400, "powerTreadsSwitch");
+                    }
+                    break;
+                case "clinkz_death_pact":
+                    if (lastAttribute != Attribute.Intelligence && Utils.SleepCheck("powerTreadsSwitch"))
+                    {
+                        SwitchTo(Attribute.Intelligence);
+                        Utils.Sleep(400, "powerTreadsSwitch");
+                    }
+                    break;
+                case "clinkz_wind_walk":
+                    if (lastAttribute != Attribute.Intelligence && Utils.SleepCheck("powerTreadsSwitch"))
+                    {
+                        SwitchTo(Attribute.Intelligence);
+                        Utils.Sleep(400, "powerTreadsSwitch");
+                    }
+                    break;
+                case "clinkz_strafe":
+                    if (lastAttribute != Attribute.Intelligence && Utils.SleepCheck("powerTreadsSwitch"))
+                    {
+                        SwitchTo(Attribute.Intelligence);
+                        Utils.Sleep(400, "powerTreadsSwitch");
+                    }
+                    break;
             }
         }
 
         private static void Drawing_OnDraw(EventArgs args)
         {
-            if (!Game.IsInGame || Game.IsPaused || Game.IsWatchingGame) return;
+            if (!Game.IsInGame || Game.IsPaused || Game.IsWatchingGame)
+                return;
 
             me = ObjectManager.LocalHero;
             if (me == null || me.ClassID != ClassID.CDOTA_Unit_Hero_Clinkz)
@@ -569,7 +489,7 @@
             //new stuff ends 
             if (Menu.Item("comboKey").GetValue<KeyBind>().Active)
             {
-                if (target == null || !target.IsAlive)
+                if (target == null || !target.IsAlive || target.IsIllusion)
                 {
                     return;
                 }
@@ -583,11 +503,246 @@
             }
         } //DRAWS
 
+        private static void Drawing_OnPreReset(EventArgs args)
+        {
+            text.OnLostDevice();
+            notice.OnLostDevice();
+            line.OnLostDevice();
+        }
+
+        private static void Drawing_OnPostReset(EventArgs args)
+        {
+            text.OnResetDevice();
+            notice.OnResetDevice();
+            line.OnResetDevice();
+        }
+
+        public static void Drawing_OnEndScene(EventArgs args)
+        {
+            if (Drawing.Direct3DDevice9 == null || Drawing.Direct3DDevice9.IsDisposed || !Game.IsInGame)
+            {
+                return;
+            }
+
+            var player = ObjectManager.LocalPlayer;
+            me = ObjectManager.LocalHero;
+            if (player == null || player.Team == Team.Observer || me.ClassID != ClassID.CDOTA_Unit_Hero_Clinkz)
+            {
+                return;
+            }
+
+            if (Menu.Item("comboKey").GetValue<KeyBind>().Active)
+            {
+                DrawBox(2, 45, 115, 20, 1, new ColorBGRA(0, 128, 0, 128));
+                DrawFilledBox(2, 45, 115, 20, new ColorBGRA(0, 0, 0, 100));
+                DrawShadowText("Clinkz#: Comboing!", 2, 45, Color.LightBlue, text);
+            }
+
+            if (ultBool)
+            {
+                DrawBox(120, 45, 65, 20, 1, new ColorBGRA(0, 200, 100, 100));
+                DrawFilledBox(120, 45, 65, 20, new ColorBGRA(0, 0, 0, 100));
+                DrawShadowText("AutoUlt On", 120, 45, Color.LightBlue, text);
+            }
+            else
+            {
+                DrawBox(120, 45, 65, 20, 1, new ColorBGRA(0, 200, 100, 100));
+                DrawFilledBox(120, 45, 65, 20, new ColorBGRA(0, 0, 0, 100));
+                DrawShadowText("AutoUlt Off", 120, 45, Color.LightBlue, text);
+            }
+        }
+
         private static void CurrentDomain_DomainUnload(object sender, EventArgs e)
         {
             text.Dispose();
             notice.Dispose();
             line.Dispose();
         }
+
+        public static void SwitchTo(Attribute attribute, bool switchBack = true)
+        {
+            if (powerTreads == null)//another check
+                return;
+
+            if (me.IsChanneling() || !me.CanUseItems() || me.HasModifiers(new[]
+                                    {
+                                        "modifier_clinkz_shadow_walk", "modifier_item_smoke_of_deceit",
+                                    }, false))
+                return;//Just for the PlayerOnExecute
+
+            /* and do this fo each attribute, Or now != next need to think of something better
+            if (Treads.ActiveAttribute != Ensage.Attribute.Agility)
+               {
+                 if (Treads.ActiveAttribute == Ensage.Attribute.Strength)
+                    {
+                     Treads.UseAbility();
+                     Treads.UseAbility();
+                    }
+                     else
+                    {
+                    Treads.UseAbility();
+                    }
+                   }
+            */
+            var now = 0;
+            var next = 0;
+
+            if (powerTreads.ActiveAttribute != Attribute.Strength)
+            {
+                if (powerTreads.ActiveAttribute != Attribute.Agility)
+                {
+                    if (powerTreads.ActiveAttribute == Attribute.Intelligence)
+                    {
+                        now = 2;
+                    }
+                }
+                else
+                {
+                    now = 3;
+                }
+            }
+            else
+            {
+                now = 1;
+            }
+
+            if (attribute != Attribute.Strength)
+            {
+                if (attribute != Attribute.Intelligence)
+                {
+                    if (attribute == Attribute.Agility)
+                    {
+                        next = 3;
+                    }
+                }
+                else
+                {
+                    next = 2;
+                }
+            }
+            else
+            {
+                next = 1;
+            }
+
+            if (now == next)
+                return;
+
+            var change = next - now % 3;
+
+            if (now == 2 && next == 1) 
+                change = 2;
+
+            int i;
+            for (i = 0; i < change; i++)
+                powerTreads.UseAbility();
+        }
+
+        private static double getDmgOnUnit(Unit unit, double bonusdamage)
+        {
+            var quacklvl = me.Spellbook.SpellW.Level;
+            var quelling_blade = me.FindItem("item_quelling_blade");
+            double physDamage = me.MinimumDamage + me.BonusDamage;
+            if (quelling_blade != null)
+            {
+                if (me.ClassID == ClassID.CDOTA_Unit_Hero_Clinkz)
+                {
+                    physDamage = me.MinimumDamage * 1.25 + me.BonusDamage;
+                }
+            }
+            var damageMp = 1 - 0.06 * unit.Armor / (1 + 0.06 * Math.Abs(unit.Armor));
+
+            var realDamage = (bonusdamage + physDamage + Quack[quacklvl]) * damageMp;
+            if (unit.ClassID == ClassID.CDOTA_BaseNPC_Creep_Siege ||
+                unit.ClassID == ClassID.CDOTA_BaseNPC_Tower)
+            {
+                realDamage = realDamage / 2;
+            }
+
+            return realDamage;
+        }
+
+        private static void drawHPLastHit()
+        {
+            var enemies = ObjectManager.GetEntities<Unit>().Where(x => (x.ClassID == ClassID.CDOTA_BaseNPC_Tower || x.ClassID == ClassID.CDOTA_BaseNPC_Creep_Lane || x.ClassID == ClassID.CDOTA_BaseNPC_Creep || x.ClassID == ClassID.CDOTA_BaseNPC_Creep_Neutral || x.ClassID == ClassID.CDOTA_BaseNPC_Creep_Siege || x.ClassID == ClassID.CDOTA_BaseNPC_Additive || x.ClassID == ClassID.CDOTA_BaseNPC_Building || x.ClassID == ClassID.CDOTA_BaseNPC_Creature) && x.IsAlive && x.IsVisible && x.Team != me.Team && x.Distance2D(me) < attackRange + 600);
+
+            foreach (var enemy in enemies.Where(x => true))
+            {
+                var health = enemy.Health;
+                var maxHealth = enemy.MaximumHealth;
+                if (health == maxHealth)
+                {
+                    continue;
+                }
+                var damge = (float)getDmgOnUnit(enemy, 0);
+                var hpleft = health;
+                var hpperc = hpleft / maxHealth;
+
+                var hbarpos = HUDInfo.GetHPbarPosition(enemy);
+
+                Vector2 screenPos;
+                var enemyPos = enemy.Position + new Vector3(0, 0, enemy.HealthBarOffset);
+                if (!Drawing.WorldToScreen(enemyPos, out screenPos))
+                {
+                    continue;
+                }
+
+                var start = screenPos;
+
+                hbarpos.X = start.X - HUDInfo.GetHPBarSizeX(enemy) / 2;
+                hbarpos.Y = start.Y;
+                var hpvarx = hbarpos.X;
+                var a = (float)Math.Round(damge * HUDInfo.GetHPBarSizeX(enemy) / enemy.MaximumHealth);
+                var position = hbarpos + new Vector2(hpvarx * hpperc + 10, -12);
+                try
+                {
+                    Drawing.DrawRect(position, new Vector2(a, HUDInfo.GetHpBarSizeY(enemy) - 4), enemy.Health > damge ? enemy.Health > damge * 2 ? new Color(180, 205, 205, 40) : new Color(255, 0, 0, 60) : new Color(127, 255, 0, 80));
+                    Drawing.DrawRect(position, new Vector2(a, HUDInfo.GetHpBarSizeY(enemy) - 4), Color.Black, true);
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(e.Message);
+                }
+            }
+        }
+
+        public static void DrawFilledBox(float x, float y, float w, float h, Color color)
+        {
+            var vLine = new Vector2[2];
+
+            line.GLLines = true;
+            line.Antialias = false;
+            line.Width = w;
+
+            vLine[0].X = x + w / 2;
+            vLine[0].Y = y;
+            vLine[1].X = x + w / 2;
+            vLine[1].Y = y + h;
+
+            line.Begin();
+            line.Draw(vLine, color);
+            line.End();
+        }
+
+        public static void DrawBox(float x, float y, float w, float h, float px, Color color)
+        {
+            DrawFilledBox(x, y + h, w, px, color);
+            DrawFilledBox(x - px, y, px, h, color);
+            DrawFilledBox(x, y - px, w, px, color);
+            DrawFilledBox(x + w, y, px, h, color);
+        }
+
+        public static void DrawShadowText(string stext, int x, int y, Color color, Font f)
+        {
+            f.DrawText(null, stext, x + 1, y + 1, Color.Black);
+            f.DrawText(null, stext, x, y, color);
+        }
+
+        private static void OnLoadMessage()
+        {
+            Game.PrintMessage("<font face='helvetica' color='#00FF00'>ClinkzSharp loaded!</font>", MessageType.LogMessage);
+            Console.WriteLine(@"> ClinkzSharp is on like Donkey Kong!");
+        }
+
     }
 } // close end or we
