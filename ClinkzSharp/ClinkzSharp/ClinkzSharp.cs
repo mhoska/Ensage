@@ -8,7 +8,6 @@
     using Ensage.Common.Extensions;
     using Ensage.Common.Menu;
     using Ensage.Items;
-
     using SharpDX;
     using SharpDX.Direct3D9;
 
@@ -19,7 +18,7 @@
     {
 
         private static Ability strafe, arrows, dpAbility;
-        private static Item bkb, orchid, hex, medallion, solar, bloodthorn;
+        private static Item bkb, orchid, hex, medallion, solar, bladeMail, bloodthorn;
         private static readonly Menu Menu = new Menu("ClinkzSharp", "clinkzsharp", true, "npc_dota_hero_Clinkz", true);
         private static Hero me, target;
         private static bool autoKillz;
@@ -50,7 +49,6 @@
             Drawing.OnEndScene += Drawing_OnEndScene;
             AppDomain.CurrentDomain.DomainUnload += CurrentDomain_DomainUnload;
 
-            Console.WriteLine(@"> ClinkzSharp LOADED!");
             var menuCombo = new Menu("Combo Options", "wombo", false, @"..\other\statpop_dotalogo", true);
             menuCombo.AddItem(new MenuItem("enable", "Enable").SetValue(true));
             menuCombo.AddItem(new MenuItem("comboKey", "Combo Key").SetValue(new KeyBind(32, KeyBindType.Press)));
@@ -59,6 +57,7 @@
             menuCombo.AddItem(new MenuItem("orbwalk", "Orbwalk").SetValue(true));
             var itemDict = new Dictionary<string, bool>
             {
+                { "item_blade_mail", true },
                 { "item_solar_crest", true },
                 { "item_black_king_bar", true },
                 { "item_medallion_of_courage", true },
@@ -153,11 +152,11 @@
             if (bloodthorn == null)
                 bloodthorn = me.FindItem("item_bloodthorn");
 
-            if (bloodthorn == null)
-                bloodthorn = me.FindItem("item_bloodthorn");
-
             if (medallion == null)
                 medallion = me.FindItem("item_medallion_of_courage");
+
+            if (bladeMail == null)
+                bladeMail = me.FindItem("item_blade_mail");
 
             if (solar == null)
                 solar = me.FindItem("item_solar_crest");
@@ -278,6 +277,12 @@
                             Utils.Sleep(100 + Game.Ping, "strafe");
                         }
 
+                        if (bladeMail != null && bladeMail.IsValid && Utils.SleepCheck("blademail") && itemToggler.IsEnabled(bladeMail.Name) && me.Distance2D(target) <= attackRange + 90)
+                        {
+                            bladeMail.UseAbility();
+                            Utils.Sleep(50 + Game.Ping, "blademail");
+                        }
+
                         if (medallion != null && medallion.IsValid && medallion.CanBeCasted() && Utils.SleepCheck("medallion") && itemToggler.IsEnabled(medallion.Name) && me.Distance2D(target) <= attackRange + 90)
                         {
                             medallion.UseAbility(target);
@@ -356,8 +361,8 @@
                              creep.ClassID == ClassID.CDOTA_BaseNPC_Invoker_Forged_Spirit ||
                              creep.ClassID == ClassID.CDOTA_BaseNPC_Creep) &&
                              creep.IsAlive && creep.IsVisible && creep.IsSpawned &&
-                             creep.Team != me.Team && creep.Health <= Math.Floor((Quack[quacklvl] + me.DamageAverage) * (1 - creep.MagicDamageResist)) 
-                             && creep.Position.Distance2D(me.Position) <= attackRange ).ToList();
+                             creep.Team != me.Team && creep.Health <= Math.Floor((Quack[quacklvl] + me.DamageAverage) * (1 - creep.MagicDamageResist))
+                             && creep.Position.Distance2D(me.Position) <= attackRange).ToList();
                 {
                     if (creepW.Count > 0)
                     {
@@ -441,7 +446,7 @@
             }
         }
 
-        private static void Drawing_OnDraw(EventArgs args)
+        public static void Drawing_OnDraw(EventArgs args)
         {
             if (!Game.IsInGame || Game.IsPaused || Game.IsWatchingGame)
                 return;
@@ -501,6 +506,7 @@
             {
                 drawHPLastHit();
             }
+           
         } //DRAWS
 
         private static void Drawing_OnPreReset(EventArgs args)
